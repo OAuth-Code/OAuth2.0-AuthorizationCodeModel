@@ -1,0 +1,135 @@
+specification OAuth
+channel_model ACM
+
+entity Environment{
+  types
+  req < message;
+  client_id < message;
+  client_secret < message;
+  scope < message;
+  state < message;
+  redi < message;
+  authz_code < message;
+  access_token < message;
+  
+  symbols
+  server, browser, client: agent;
+  ch_a2b, ch_b2a, ch_b2c_1, ch_b2c_2, ch_c2b, ch_c2a_1, ch_c2a_2, ch_a2c_1, ch_a2c_2 : channel;
+  ch_b2i_1, ch_b2i_2, ch_i2b, ch_i2a_1, ch_i2a_2, ch_a2i_1, ch_a2i_2 : channel;
+  ch_a2i, ch_i2a, ch_i2c_1, ch_i2c_2, ch_c2i:channel;
+  ch_i2b, ch_b2i, ch_c2i_1, ch_c2i_2, ch_i2c_1, ch_i2c_2:channel;
+  issued(agent, client_id, access_token) : fact;
+  provided(agent, client_id): fact;
+
+  
+  entity Session(A, B, C: agent, Ch_A2B, Ch_B2A, Ch_B2C_1, Ch_B2C_2, Ch_C2B, Ch_C2A_1, Ch_C2A_2, Ch_A2C_1, Ch_A2C_2: channel){
+    symbols
+    Authz_Codes : client_id*agent*authz_code set;
+    Access_Tokens : client_id*agent*access_token set;
+    Verify_State : client_id*state set;
+  
+    entity Browser(Actor, A, C: agent, Ch_B2C_1, Ch_B2C_2, Ch_C2B, Ch_B2A, Ch_A2B: channel){
+      symbols
+      Req : req;
+      Client_Id : client_id;
+      Redirect_Uri : redi;
+      Scope : scope;
+      State : state;
+      Code : authz_code;
+    
+      body{
+        Actor -Ch_B2C_1-> C : Req; 
+        C -Ch_C2B-> Actor : ?A.?Client_Id.?Redirect_Uri.?Scope.secret_state:(?State);
+        Actor -Ch_B2A-> A : Client_Id.Redirect_Uri.Scope.State;
+        A -Ch_A2B-> Actor : ?Redirect_Uri.secret_state:(?State).secret_code:(?Code);
+        Actor -Ch_B2C_2-> C : State.Code; 
+      }
+    }
+    
+    entity Client(Actor, B, A: agent,  Verify_State : client_id*state set, Ch_C2B, Ch_B2C_1, Ch_B2C_2, Ch_C2A_1, Ch_C2A_2, Ch_A2C_1, Ch_A2C_2: channel){
+      symbols
+      Req : req;
+      Client_Id : client_id;
+      Client_Secret : client_secret;
+      Redirect_Uri : redi;
+      Scope : scope;
+      State : state;
+      Code : authz_code;
+      Token : access_token;
+    
+      body{
+        B -Ch_B2C_1-> Actor : ?Req;
+        secret_state:(State) := fresh();
+        Verify_State -> add((Client_Id, State));
+        Actor -Ch_C2B-> B : A.Client_Id.Redirect_Uri.Scope.State;
+        provided(Actor, Client_Id);
+        select{
+          on((B -Ch_B2C_2-> Actor : secret_state:(?State).secret_code:(?Code))
+          &(Verify_State -> contains((Client_Id, ?State))))
+          :{ 
+            Actor -Ch_C2A_1-> A : Redirect_Uri.Client_Id.Client_Secret.Code;
+            A -Ch_A2C_1-> Actor : secret_token:(?Token);
+          }
+        }
+      }
+    }
+    
+    entity Auth_Server(Actor, B, C: agent, Authz_Codes: client_id*agent*authz_code set, Access_Tokens : client_id*agent*access_token set, Ch_A2B, Ch_B2A, Ch_A2C_1, Ch_A2C_2, Ch_C2A_1, Ch_C2A_2: channel){
+      symbols
+      Client_Id : client_id;
+      Client_Secret : client_secret;
+      Redirect_Uri1 : redi;
+      Redirect_Uri2 : redi;
+      Scope : scope;
+      State : state;
+      Code : authz_code;
+      Token : access_token;
+    
+      body{
+        select{
+          on(B -Ch_B2A-> Actor: ?Client_Id.?Redirect_Uri1.?Scope.secret_state:(?State)):{
+            secret_code:(Code):=fresh();
+            Authz_Codes -> add((Client_Id, B, Code));
+            Actor -Ch_A2B-> B : Redirect_Uri1.State.Code;
+          }
+          on((C -Ch_C2A_1-> Actor: ?Redirect_Uri2.?Client_Id.?Client_Secret.secret_code:(?Code))
+              &(Redirect_Uri1=?Redirect_Uri2)
+              &(Authz_Codes -> contains((?Client_Id, B, ?Code))))
+              :{
+                secret_token:(Token) := fresh();
+                issued(Actor, Client_Id, Token);
+                Actor -Ch_A2C_1-> C : Token;
+                }
+            }
+        }
+    }
+    
+    body{
+      Verify_State := {};
+      Authz_Codes := {};
+      Access_Tokens := {};
+      new Browser(B, A, C, Ch_B2C_1, Ch_B2C_2, Ch_C2B, Ch_B2A, Ch_A2B);
+      new Client(C, B, A, Verify_State, Ch_C2B, Ch_B2C_1, Ch_B2C_2, Ch_C2A_1, Ch_C2A_2, Ch_A2C_1, Ch_A2C_2);
+      new Auth_Server(A, B, C, Authz_Codes, Access_Tokens, Ch_A2B, Ch_B2A, Ch_A2C_1, Ch_A2C_2, Ch_C2A_1, Ch_C2A_2);
+    }
+    goals
+      secret_code:(_){A, B, C};                                                                   
+      secret_token:(_){A, C};                                                                      
+      secret_state:(_){A, B, C};                                                            
+      C_with_CID: forall X.[](issued((?, X, ?) => <->provided(?, X));    
+  }
+
+  body{
+    unilateral_conf_auth(ch_a2b, ch_b2a, server);
+    unilateral_conf_auth(ch_b2c_1, ch_c2b, client);
+    unilateral_conf_auth(ch_b2c_2, ch_c2b, client);
+    bilateral_conf_auth(ch_c2a_1, ch_a2c_1, server, client);
+    bilateral_conf_auth(ch_c2a_2, ch_a2c_2, server, client);
+    
+ 
+    new Session(server, browser, client, ch_a2b, ch_b2a, ch_b2c_1, ch_b2c_2, ch_c2b, ch_c2a_1, ch_c2a_2, ch_a2c_1, ch_a2c_2);
+    new Session(server, i, client     , ch_a2i, ch_i2a, ch_i2c_1, ch_i2c_2, ch_c2i, ch_c2a_1, ch_c2a_2, ch_a2c_1, ch_a2c_2);
+	new Session(server, browser, i     , ch_a2b, ch_b2a, ch_b2i_1, ch_b2i_2, ch_i2b, ch_i2a_1, ch_i2a_2, ch_a2i_1, ch_a2i_2);
+    new Session(i, browser, client, ch_i2b, ch_b2i, ch_b2c_1, ch_b2c_2, ch_c2b, ch_c2i_1, ch_c2i_2, ch_i2c_1, ch_i2c_2);
+  }
+}
